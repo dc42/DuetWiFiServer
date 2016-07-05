@@ -1,7 +1,7 @@
 # DuetWiFiServer
 HTTP and related server code for Duet WiFi 3D printer electronics
 
-Acknowledgemehnts:
+Acknowledgements:
 
 1. Reprap forum user toxuin and this post http://forums.reprap.org/read.php?2,582444,582444#msg-582444 for providing a starting point for this project.
 
