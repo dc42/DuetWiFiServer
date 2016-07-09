@@ -30,19 +30,28 @@ MDNSResponder mdns;
 RepRapWebServer server(80);
 WiFiServer tcp(23);
 WiFiClient tcpclient;
-String lastResponse;
-String serialData;
-String fileUploading = "";
-String lastUploadedFile = "";
+DNSServer dns;
+String wifiConfigHtml;
+
+enum class OperatingState
+{
+    Unknown = 0,
+    Client = 1,
+    AccessPoint = 2    
+};
+
+OperatingState currentState = OperatingState::Unknown;
+
+ADC_MODE(ADC_VCC);          // need this for the ESP.getVcc() call to work
 
 void fsHandler();
 void handleRr();
 void handleRrUpload();
 
-bool isLoggedIn(IPAddress clientIP);
-bool logIn(IPAddress clientIP);
-void logOut(IPAddress clientIP);
 void urldecode(String &input);
+void StartAccessPoint();
+void SendInfoToSam();
+bool TryToConnect();
 
 void setup() {
   Serial.begin(115200);
@@ -53,134 +62,65 @@ void setup() {
   // Set up the SPI subsystem
   SPITransaction::Init();
 
-  EEPROM.get(0, ssid);
-  EEPROM.get(32, pass);
-  EEPROM.get(32+64, webhostname);
-
-  wifi_station_set_hostname(webhostname);     // must do thia before calling WiFi.begin()
-  uint8_t failcount = 0;
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, pass);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    failcount++;
-    if (failcount % 2 == 0) {
-      Serial.println("WAIT WIFI " + String(MAX_WIFI_FAIL/2 - (failcount/2)));
-    }
-    
-    if (failcount > MAX_WIFI_FAIL) { // 1 min
-      Serial.println("WIFI ERROR");
-      WiFi.mode(WIFI_STA);
-      WiFi.disconnect();
-      delay(100);
-
-      uint8_t num_ssids = WiFi.scanNetworks();
-      // TODO: NONE? OTHER?
-      String wifiConfigHtml = F("<html><body><h1>Select your WiFi network:</h1><br /><form method=\"POST\">");
-      for (uint8_t i = 0; i < num_ssids; i++) {
-         wifiConfigHtml += "<input type=\"radio\" id=\"" + WiFi.SSID(i) + "\"name=\"ssid\" value=\"" + WiFi.SSID(i) + "\" /><label for=\"" + WiFi.SSID(i) + "\">" + WiFi.SSID(i) + "</label><br />";
-      }
-      wifiConfigHtml += F("<label for=\"password\">WiFi Password:</label><input type=" PASSWORD_INPUT_TYPE " id=\"password\" name=\"password\" /><br />");
-      wifiConfigHtml += F("<p><label for=\"webhostname\">Duet host name: </label><input type=\"text\" id=\"webhostname\" name=\"webhostname\" value=\"duetwifi\" /><br />");
-      wifiConfigHtml += F("<i>(This would allow you to access your printer by name instead of IP address. I.e. http://duetwifi/)</i></p>");
-      wifiConfigHtml += F("<input type=\"submit\" value=\"Save and reboot\" /></form></body></html>");
-
-      Serial.println("Found " + String(num_ssids) + " WIFI");
-
-      delay(5000);
-      DNSServer dns;
-      IPAddress apIP(192, 168, 1, 1);
-      WiFi.mode(WIFI_AP);
-      WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-      WiFi.softAP("DuetWiFi");
-      Serial.println("WiFi -> DuetWiFi");
-      dns.setErrorReplyCode(DNSReplyCode::NoError);
-      dns.start(53, "*", apIP);
-
-      server.on("/", HTTP_GET, [&wifiConfigHtml]() {
-        server.send(200, FPSTR(STR_MIME_TEXT_HTML), wifiConfigHtml);
-      });
-
-      server.on("/", HTTP_POST, []() {
-        if (server.args() <= 0) {
-          server.send(500, FPSTR(STR_MIME_TEXT_PLAIN), F("Got no data, go back and retry"));
-          return;
-        }
-        for (uint8_t e = 0; e < server.args(); e++) {
-          String argument = server.arg(e);
-          urldecode(argument);
-          if (server.argName(e) == "password") argument.toCharArray(pass, 64);//pass = server.arg(e);
-          else if (server.argName(e) == "ssid") argument.toCharArray(ssid, 32);//ssid = server.arg(e);
-          else if (server.argName(e) == "webhostname") argument.toCharArray(webhostname, 64);
-        }
-        EEPROM.put(0, ssid);
-        EEPROM.put(32, pass);
-        EEPROM.put(32+64, webhostname);
-        EEPROM.commit();
-        server.send(200, FPSTR(STR_MIME_TEXT_HTML), F("<h1>All set!</h1><br /><p>(Please reboot me.)</p>"));
-        Serial.println("SSID: " + String(ssid) + ", PASS: " + String(pass));
-        delay(50);
-        ESP.restart();
-      });
-      server.begin();
-      Serial.println(WiFi.softAPIP().toString());
-      for (;;) { // THIS ONE IS FOR WIFI AP SETTINGS PAGE
-        server.handleClient();
-        dns.processNextRequest();
-        delay(1);
-      }
-    }
-  }
-
-  if (mdns.begin(webhostname, WiFi.localIP())) {
-    MDNS.addService("http", "tcp", 80);
-  }
-    
-  SSDP.setSchemaURL("description.xml");
-  SSDP.setHTTPPort(80);
-  SSDP.setName(webhostname);
-  SSDP.setSerialNumber(WiFi.macAddress());
-  SSDP.setURL("reprap.htm");
-  SSDP.begin();
-    
-  SPIFFS.begin();
-
-  server.servePrinter(true);
-  server.onNotFound(fsHandler);
-  server.onPrefix("/rr_", HTTP_ANY, handleRr, handleRrUpload);
-  server.on("/description.xml", HTTP_GET, [](){SSDP.schema(server.client());});
-
-  Serial.println(WiFi.localIP().toString());
-
-  // Schedule an info message to the Duet, containing the IP address, free heap memory, and reset reason
-  {
-    struct
+  // Try to connect using the saved parameters
+  bool success = TryToConnect();
+  if (success)
+  {    
+    if (mdns.begin(webhostname, WiFi.localIP()))
     {
-      uint32_t ip;
-      uint32_t freeHeap;
-      uint32_t resetReason;
-      char hostName[64];
-      char ssid[32];
-    } response;
-    response.ip = static_cast<uint32_t>(WiFi.localIP());
-    response.freeHeap = ESP.getFreeHeap();
-    response.resetReason = ESP.getResetInfoPtr()->reason;
-    memcpy(response.hostName, webhostname, sizeof(response.hostName));
-    memcpy(response.ssid, ssid, sizeof(response.ssid));
-    SPITransaction::ScheduleInfoMessage(SPITransaction::ttNetworkInfo, &response, sizeof(response));
+      MDNS.addService("http", "tcp", 80);
+    }
+      
+    SSDP.setSchemaURL("description.xml");
+    SSDP.setHTTPPort(80);
+    SSDP.setName(webhostname);
+    SSDP.setSerialNumber(WiFi.macAddress());
+    SSDP.setURL("reprap.htm");
+    SSDP.begin();
+      
+    SPIFFS.begin();
+  
+    server.servePrinter(true);
+    server.onNotFound(fsHandler);
+    server.onPrefix("/rr_", HTTP_ANY, handleRr, handleRrUpload);
+    server.on("/description.xml", HTTP_GET, [](){SSDP.schema(server.client());});
+  
+    Serial.println(WiFi.localIP().toString());
+
+    server.begin();
+    tcp.begin();
+  
+    // The following causes a crash using release 2.1.0 of the Arduino ESP8266 core, and is probably unsafe even on 2.0.0
+    //tcp.setNoDelay(true);
+
+    currentState = OperatingState::Client;
   }
-
-  server.begin();
-  tcp.begin();
-
-  // The following causes a crash using release 2.1.0 of the Arduino ESP8266 core, and is probably unsafe even on 2.0.0
-  //tcp.setNoDelay(true);
+  else
+  {
+    StartAccessPoint();
+    currentState = OperatingState::AccessPoint;
+  }
+  
+  SendInfoToSam();
 }
 
 void loop()
 {
-  server.handleClient();
+  switch (currentState)
+  {
+  case OperatingState::Client:
+    server.handleClient();
+    break;
+
+  case OperatingState::AccessPoint:
+    server.handleClient();
+    dns.processNextRequest();
+    break;
+
+  default:
+    break;
+  }
+    
   SPITransaction::DoTransaction();
   if (SPITransaction::DataReady())
   {
@@ -194,6 +134,137 @@ void loop()
     SPITransaction::IncomingDataTaken();
   }
   yield();
+}
+
+// Try to connect using the saved SSID and password, returning true if successful
+bool TryToConnect()
+{
+  EEPROM.get(0, ssid);
+  EEPROM.get(32, pass);
+  EEPROM.get(32+64, webhostname);
+
+  wifi_station_set_hostname(webhostname);     // must do thia before calling WiFi.begin()
+  uint8_t failcount = 0;
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass);
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    failcount++;
+    if (failcount % 2 == 0)
+    {
+      Serial.println("WAIT WIFI " + String(MAX_WIFI_FAIL/2 - (failcount/2)));
+    }
+    
+    if (failcount > MAX_WIFI_FAIL)  // 1 min
+    {
+      Serial.println("WIFI ERROR");
+      WiFi.mode(WIFI_STA);
+      WiFi.disconnect();
+      delay(100);
+      return false;
+    }
+  }
+  return true;
+}
+
+void StartAccessPoint()
+{
+  uint8_t num_ssids = WiFi.scanNetworks();
+  // TODO: NONE? OTHER?
+  wifiConfigHtml = F("<html><body><h1>Select your WiFi network:</h1><br /><form method=\"POST\">");
+  for (uint8_t i = 0; i < num_ssids; i++) {
+     wifiConfigHtml += "<input type=\"radio\" id=\"" + WiFi.SSID(i) + "\"name=\"ssid\" value=\"" + WiFi.SSID(i) + "\" /><label for=\"" + WiFi.SSID(i) + "\">" + WiFi.SSID(i) + "</label><br />";
+  }
+  wifiConfigHtml += F("<label for=\"password\">WiFi Password:</label><input type=" PASSWORD_INPUT_TYPE " id=\"password\" name=\"password\" /><br />");
+  wifiConfigHtml += F("<p><label for=\"webhostname\">Duet host name: </label><input type=\"text\" id=\"webhostname\" name=\"webhostname\" value=\"duetwifi\" /><br />");
+  wifiConfigHtml += F("<i>(This would allow you to access your printer by name instead of IP address. I.e. http://duetwifi/)</i></p>");
+  wifiConfigHtml += F("<input type=\"submit\" value=\"Save and reboot\" /></form></body></html>");
+
+  Serial.println("Found " + String(num_ssids) + " WIFI");
+
+  delay(5000);
+  IPAddress apIP(192, 168, 1, 1);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(softApName);
+  Serial.println("WiFi -> DuetWiFi");
+  dns.setErrorReplyCode(DNSReplyCode::NoError);
+  dns.start(53, "*", apIP);
+
+  server.on("/", HTTP_GET, []() {
+    server.send(200, FPSTR(STR_MIME_TEXT_HTML), wifiConfigHtml);
+  });
+
+  server.on("/", HTTP_POST, []() {
+    if (server.args() <= 0) {
+      server.send(500, FPSTR(STR_MIME_TEXT_PLAIN), F("Got no data, go back and retry"));
+      return;
+    }
+    for (uint8_t e = 0; e < server.args(); e++) {
+      String argument = server.arg(e);
+      urldecode(argument);
+      if (server.argName(e) == "password") argument.toCharArray(pass, 64);//pass = server.arg(e);
+      else if (server.argName(e) == "ssid") argument.toCharArray(ssid, 32);//ssid = server.arg(e);
+      else if (server.argName(e) == "webhostname") argument.toCharArray(webhostname, 64);
+    }
+    EEPROM.put(0, ssid);
+    EEPROM.put(32, pass);
+    EEPROM.put(32+64, webhostname);
+    EEPROM.commit();
+    server.send(200, FPSTR(STR_MIME_TEXT_HTML), F("<h1>All set!</h1><br /><p>(Please reboot me.)</p>"));
+    Serial.println("SSID: " + String(ssid) + ", PASS: " + String(pass));
+    delay(50);
+    ESP.restart();
+  });
+  server.begin();
+  Serial.println(WiFi.softAPIP().toString());
+}
+
+// Schedule an info message to the SAM processor
+void SendInfoToSam()
+{
+  {
+    struct
+    {
+      uint32_t formatVersion;
+      uint32_t ip;
+      uint32_t freeHeap;
+      uint32_t resetReason;
+      uint32_t flashSize;
+      uint16_t operatingState;
+      uint16_t vcc;
+      char firmwareVersion[16];
+      char hostName[64];
+      char ssid[32];
+    } response;
+
+    response.formatVersion = 1;
+    response.ip = static_cast<uint32_t>(WiFi.localIP());
+    response.freeHeap = ESP.getFreeHeap();
+    response.resetReason = ESP.getResetInfoPtr()->reason;
+    response.flashSize = ESP.getFlashChipRealSize();
+    response.operatingState = (uint32_t)currentState;
+    response.vcc = ESP.getVcc();
+    strncpy(response.firmwareVersion, firmwareVersion, sizeof(response.firmwareVersion));
+    memcpy(response.hostName, webhostname, sizeof(response.hostName));
+    switch (currentState)
+    {
+    case OperatingState::Client:
+      memcpy(response.ssid, ssid, sizeof(response.ssid));
+      break;
+
+    case OperatingState::AccessPoint:
+      strncpy(response.ssid, softApName, sizeof(response.ssid));
+      break;
+
+    default:
+      response.ssid[0] = 0;
+      break;
+    }
+    SPITransaction::ScheduleInfoMessage(SPITransaction::ttNetworkInfo, &response, sizeof(response));
+  }
 }
 
 void fsHandler()
@@ -366,39 +437,6 @@ void handleRr() {
 
 void handleRrUpload() {
 }
-
-
-bool isLoggedIn(IPAddress clientIP) {
-  for (int i = 0; i < loggedInClientsNum; i++) {
-    if (sessions[i] == clientIP) {
-      return true;
-    }
-  }
-  return true;// false;
-}
-
-bool logIn(IPAddress clientIP) {
-  if (loggedInClientsNum < MAX_LOGGED_IN_CLIENTS) {
-    sessions[loggedInClientsNum] = clientIP;
-    loggedInClientsNum++;
-    return true;
-  }
-  return false;
-}
-
-void logOut(IPAddress clientIP) {
-  for (int i = 0; i < loggedInClientsNum; i++) {
-    if (sessions[i] == clientIP) {
-      for (int e = loggedInClientsNum - 1; e > i; e--) {
-        // SHIFT ARRAY
-        memcpy(&sessions[e - 1], &sessions[e], sizeof(IPAddress));
-      }
-      loggedInClientsNum--;
-      return;
-    }
-  }
-}
-
 
 void urldecode(String &input) { // LAL ^_^
   input.replace("%0A", String('\n'));

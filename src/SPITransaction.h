@@ -26,7 +26,8 @@ namespace SPITransaction
   const uint32_t ttRr = 0x01;                         // any request starting with "rr_"
   
   // Opcodes for info messages from web server to Duet
-  const uint32_t ttNetworkInfo = 0x70;                // used to pass network info to Duet when first connected
+  const uint32_t ttNetworkInfoOld = 0x70;             // used to pass network info to Duet when first connected
+  const uint32_t ttNetworkInfo = 0x71;                // used to pass network info to Duet when first connected
 
   // Opcodes for requests and info from Duet to web server
   const uint32_t ttNetworkConfig = 0x80;              // set network configuration (SSID, password etc.)
