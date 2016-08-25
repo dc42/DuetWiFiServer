@@ -233,6 +233,7 @@ void SendInfoToSam()
       uint32_t freeHeap;
       uint32_t resetReason;
       uint32_t flashSize;
+      int32_t rssi;
       uint16_t operatingState;
       uint16_t vcc;
       char firmwareVersion[16];
@@ -240,11 +241,12 @@ void SendInfoToSam()
       char ssid[32];
     } response;
 
-    response.formatVersion = 1;
+    response.formatVersion = 2;
     response.ip = static_cast<uint32_t>(WiFi.localIP());
     response.freeHeap = ESP.getFreeHeap();
     response.resetReason = ESP.getResetInfoPtr()->reason;
     response.flashSize = ESP.getFlashChipRealSize();
+    response.rssi = WiFi.RSSI();
     response.operatingState = (uint32_t)currentState;
     response.vcc = ESP.getVcc();
     strncpy(response.firmwareVersion, firmwareVersion, sizeof(response.firmwareVersion));
@@ -274,14 +276,11 @@ void fsHandler()
   {
     path += F("reprap.htm");            // default to reprap.htm as the index page
   }
-  bool addedGz = false;
   File dataFile = SPIFFS.open(path, "r");
   if (!dataFile && !path.endsWith(".gz") && path.length() <= 29)
   {
     // Requested file not found and wasn't a zipped file, so see if we have a zipped version
-    path += F(".gz");
-    addedGz = true;
-    dataFile = SPIFFS.open(path, "r");
+    dataFile = SPIFFS.open(path + ".gz", "r");
   }
   if (!dataFile)
   {
@@ -289,12 +288,13 @@ void fsHandler()
     return;
   }
   // No need to add the file size or encoding headers here because streamFile() does that automatically
-  String dataType = FPSTR(STR_MIME_TEXT_PLAIN);
+  String dataType;
   if (path.endsWith(".html") || path.endsWith(".htm")) dataType = FPSTR(STR_MIME_TEXT_HTML);
-  else if (path.endsWith(".css") || path.endsWith(".css.gz")) dataType = F("text/css");
-  else if (path.endsWith(".js") || path.endsWith(".js.gz")) dataType = F("application/javascript");
-  else if (!addedGz && path.endsWith(".gz")) dataType = F("application/x-gzip");
-  server.streamFile(dataFile, dataType);
+  else if (path.endsWith(".css")) dataType = F("text/css");
+  else if (path.endsWith(".js")) dataType = F("application/javascript");
+  else if (path.endsWith(".gz")) dataType = F("application/x-gzip");
+  else dataType = FPSTR(STR_MIME_TEXT_PLAIN);
+  server.streamFile(dataFile, dataType);    // this will automatically set the content encoding if it is a zipped file
   dataFile.close();
 }
 
