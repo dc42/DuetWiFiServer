@@ -100,20 +100,14 @@ public:
   // content_type - HTTP content type, like "text/plain" or "image/png"
   // content - actual content body
   void send(int code, size_t contentLength, const __FlashStringHelper *contentType, const uint8_t *data, size_t dataLength, bool isLast);
-  void sendMore(const uint8_t *data, size_t dataLength, bool isLast);
-
   void send(int code, const char* content_type = NULL, const String& content = String(""));
   void send(int code, char* content_type, const String& content);
   void send(int code, const String& content_type, const String& content);
-  void send_P(int code, PGM_P content_type, PGM_P content);
-  void send_P(int code, PGM_P content_type, PGM_P content, size_t contentLength);
 
   void setContentLength(size_t contentLength) { _contentLength = contentLength; }
   void sendHeader(const String& name, const String& value, bool first = false);
   void sendContent(const uint8_t *content, size_t dataLength, bool last);
   void sendContent(const String& content, bool last = true);
-  void sendContent_P(PGM_P content, bool last = true);
-  void sendContent_P(PGM_P content, size_t size, bool last = true);
 
   void servePrinter(bool b) { _servingPrinter = b; }
   uint32_t getPostLength() const { return _postLength; }

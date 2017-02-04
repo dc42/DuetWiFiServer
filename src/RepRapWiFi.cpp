@@ -90,6 +90,7 @@ void setup() {
     server.begin();
     tcp.begin();
   
+    // NOTE: setNoDelay activates the Nagle algorithm on client PCBs, so it isn't surprising that this doesn't work:
     // The following causes a crash using release 2.1.0 of the Arduino ESP8266 core, and is probably unsafe even on 2.0.0
     //tcp.setNoDelay(true);
 
@@ -295,6 +296,7 @@ void fsHandler()
   else if (path.endsWith(".gz")) dataType = F("application/x-gzip");
   else dataType = FPSTR(STR_MIME_TEXT_PLAIN);
   server.streamFile(dataFile, dataType);    // this will automatically set the content encoding if it is a zipped file
+  server.client().stop();
   dataFile.close();
 }
 
@@ -356,14 +358,24 @@ void handleRr() {
         }
         else
         {
-          server.sendMore(data, length, isLast);
+          server.sendContent(data, length, isLast);
         }
         SPITransaction::IncomingDataTaken();
         if (isLast)
         {
+#if 0
+          // Actually we should be able to close the connection here, but this can sometimes
+          // lead to misbehaviour - especially when dealing with lots of fileinfo requests
+          server.client().stop();
+#endif
           hadReply = true;
         }
-      }
+        else
+        {
+          // Make sure this request doesn't time out if we're still sending, else we break rr_download for large files
+          now = millis();
+        }
+       }
       else
       {
 //        Serial.print("Incoming data, opcode=");

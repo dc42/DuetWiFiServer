@@ -27,7 +27,8 @@
 #include "RepRapWebServer.h"
 #include "FS.h"
 #include "RequestHandlersImpl.h"
-// #define DEBUG
+
+//#define DEBUG
 #define DEBUG_OUTPUT Serial
 
 
@@ -199,43 +200,12 @@ void RepRapWebServer::send(int code, size_t contentLength, const __FlashStringHe
     }
 }
 
-void RepRapWebServer::sendMore(const uint8_t *data, size_t dataLength, bool isLast)
-{
-    sendContent(data, dataLength, isLast);    
-}
-
 void RepRapWebServer::send(int code, const char* content_type, const String& content)
 {
     String header;
     _prepareHeader(header, code, content_type, content.length());
     sendContent(header, false);
     sendContent(content, true);
-}
-
-void RepRapWebServer::send_P(int code, PGM_P content_type, PGM_P content)
-{
-    size_t contentLength = 0;
-
-    if (content != NULL)
-    {
-        contentLength = strlen_P(content);
-    }
-
-    String header;
-    char type[64];
-    memccpy_P((void*)type, (PGM_VOID_P)content_type, 0, sizeof(type));
-    _prepareHeader(header, code, (const char* )type, contentLength);
-    sendContent(header, false);
-    sendContent_P(content, true);
-}
-
-void RepRapWebServer::send_P(int code, PGM_P content_type, PGM_P content, size_t contentLength) {
-    String header;
-    char type[64];
-    memccpy_P((void*)type, (PGM_VOID_P)content_type, 0, sizeof(type));
-    _prepareHeader(header, code, (const char* )type, contentLength);
-    sendContent(header, false);
-    sendContent_P(content, contentLength, true);
 }
 
 void RepRapWebServer::send(int code, char* content_type, const String& content)
@@ -250,86 +220,12 @@ void RepRapWebServer::send(int code, const String& content_type, const String& c
 
 void RepRapWebServer::sendContent(const uint8_t *content, size_t dataLength, bool last)
 {
-  const size_t unit_size = HTTP_DOWNLOAD_UNIT_SIZE;
-
-  while (dataLength != 0)
-  {
-    size_t will_send = (dataLength < unit_size) ? dataLength : unit_size;
-    size_t sent = _currentClient.write(content, will_send, last && will_send == dataLength);
-    if (sent == 0)
-    {
-      break;
-    }
-    dataLength -= sent;
-    content += sent;
-  }  
-//  if (isLast)
-//  {
-//    _currentClient.close();
-//  }
+  _currentClient.write(content, dataLength, last);
 }
 
 void RepRapWebServer::sendContent(const String& content, bool last)
 {
   sendContent((const uint8_t*)content.c_str(), content.length(), last);
-}
-
-void RepRapWebServer::sendContent_P(PGM_P content, bool last)
-{
-    char contentUnit[HTTP_DOWNLOAD_UNIT_SIZE + 1];
-
-    contentUnit[HTTP_DOWNLOAD_UNIT_SIZE] = '\0';
-
-    while (content != NULL) {
-        size_t contentUnitLen;
-        PGM_P contentNext;
-
-        // due to the memccpy signature, lots of casts are needed
-        contentNext = (PGM_P)memccpy_P((void*)contentUnit, (PGM_VOID_P)content, 0, HTTP_DOWNLOAD_UNIT_SIZE);
-
-        if (contentNext == NULL) {
-            // no terminator, more data available
-            content += HTTP_DOWNLOAD_UNIT_SIZE;
-            contentUnitLen = HTTP_DOWNLOAD_UNIT_SIZE;
-        }
-        else {
-            // reached terminator. Do not send the terminator
-            contentUnitLen = contentNext - contentUnit - 1;
-            content = NULL;
-        }
-
-        // write is so overloaded, had to use the cast to get it pick the right one
-        _currentClient.write((const uint8_t*)contentUnit, contentUnitLen, last && content == NULL);
-    }
-//    if (isLast)
-//    {
-//      _currentClient.close();
-//    }
-}
-
-void RepRapWebServer::sendContent_P(PGM_P content, size_t size, bool last)
-{
-    char contentUnit[HTTP_DOWNLOAD_UNIT_SIZE + 1];
-    contentUnit[HTTP_DOWNLOAD_UNIT_SIZE] = '\0';
-    size_t remaining_size = size;
-
-    while (content != NULL && remaining_size > 0) {
-        size_t contentUnitLen = HTTP_DOWNLOAD_UNIT_SIZE;
-
-        if (remaining_size < HTTP_DOWNLOAD_UNIT_SIZE) contentUnitLen = remaining_size;
-        // due to the memcpy signature, lots of casts are needed
-        memcpy_P((void*)contentUnit, (PGM_VOID_P)content, contentUnitLen);
-
-        content += contentUnitLen;
-        remaining_size -= contentUnitLen;
-
-        // write is so overloaded, had to use the cast to get it pick the right one
-        _currentClient.write((const uint8_t*)contentUnit, contentUnitLen, last && remaining_size == 0);
-    }
-//    if (isLast)
-//    {
-//      _currentClient.close();
-//    }
 }
 
 String RepRapWebServer::arg(const char* name) {
